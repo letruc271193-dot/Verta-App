@@ -1,10 +1,7 @@
-import eventlet
-eventlet.monkey_patch() # Phép thuật giúp Web và Bot chạy song song trên Render không bị kẹt
-
-import threading
+import os
 import time
 import telebot
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from flask_socketio import SocketIO
 
 # --- CẤU HÌNH BOT TELEGRAM ---
@@ -12,7 +9,11 @@ API_TOKEN = '8762431978:AAFQbSkjgzhI-GHR-TkHJtOvl-j4BD7CeOs'
 bot = telebot.TeleBot(API_TOKEN)
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# Đã gỡ bỏ eventlet để chống xung đột luồng mạng
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Tự động lấy đường link Web do Render cấp
+RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL') 
 
 DRIVERS_TELEGRAM = {
     "36674469A": {"name": "Lê Anh Hào", "chat_id": 8507091430},
@@ -20,12 +21,22 @@ DRIVERS_TELEGRAM = {
     "36674469N": {"name": "Nguyễn Duy Vũ", "chat_id": 6796184126}
 }
 
-# --- ROUTE GIAO DIỆN ---
+# --- ROUTE GIAO DIỆN WEB ---
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# --- LẮNG NGHE YÊU CẦU ĐẶT XE TỪ WEB ---
+# --- ROUTE WEBHOOK (Bí kíp để Telegram và Web giao tiếp mượt mà trên Server) ---
+@app.route('/telegram_webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    return 'Error', 403
+
+# --- LẮNG NGHE YÊU CẦU ĐẶT XE TỪ GIAO DIỆN WEB ---
 @socketio.on('request_driver')
 def handle_web_request(data):
     driver_code = data.get('driver_code')
@@ -56,50 +67,42 @@ def handle_web_request(data):
            f"💰 Giá nhận: {formatted_price}\n\n")
 
     try:
+        # Gửi tin nhắn qua Telegram
         bot.send_message(driver['chat_id'], msg, reply_markup=markup, parse_mode='Markdown')
+        print(f"✅ Đã gửi tín hiệu Telegram cho: {driver['name']}")
     except Exception as e:
         print(f"❌ Lỗi gửi tin Telegram: {e}")
 
-# --- LẮNG NGHE PHẢN HỒI TỪ TÀI XẾ (TELEGRAM) ---
+# --- LẮNG NGHE PHẢN HỒI NÚT BẤM TỪ TÀI XẾ TRÊN TELEGRAM ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
-    print(f"📡 ĐÃ NHẬN CALLBACK TỪ TELEGRAM: {call.data}")
     bot.answer_callback_query(call.id)
-
     data = call.data.split('_')
     action = data[0]
     driver_code = data[1]
 
     if action == "accept":
-        print(f"✅ Đang xử lý lệnh nhận chuyến cho: {driver_code}")
-        try:
-            # Bắn tín hiệu về Web
-            socketio.emit('driver_response', {'action': 'accept', 'driver_code': driver_code})
-            bot.edit_message_text(f"✅ CHUYẾN ĐÃ NHẬN\n(Tài xế: {driver_code})",
-                                  call.message.chat_id, call.message.message_id)
-        except Exception as e:
-            print(f"❌ Lỗi truyền tin: {e}")
-
+        socketio.emit('driver_response', {'action': 'accept', 'driver_code': driver_code})
+        bot.edit_message_text(f"✅ CHUYẾN ĐÃ NHẬN\n(Tài xế: {driver_code})",
+                              call.message.chat_id, call.message.message_id)
     elif action == "decline":
-        try:
-            socketio.emit('driver_response', {'action': 'decline', 'driver_code': driver_code})
-            bot.edit_message_text("❌ Đã từ chối chuyến.",
-                                  call.message.chat_id, call.message.message_id)
-        except Exception as e:
-            print(f"❌ Lỗi truyền tin: {e}")
+        socketio.emit('driver_response', {'action': 'decline', 'driver_code': driver_code})
+        bot.edit_message_text("❌ Đã từ chối chuyến.",
+                              call.message.chat_id, call.message.message_id)
 
-def run_polling():
-    print("🤖 Verta Bot đang kết nối...")
+# --- THIẾT LẬP HỆ THỐNG KHI KHỞI ĐỘNG ---
+if RENDER_URL:
+    # Nếu đang chạy trên máy chủ Render -> Dùng Webhook (Ổn định tuyệt đối, không bị chặn)
+    print(f"🚀 Thiết lập Webhook tại: {RENDER_URL}")
     bot.remove_webhook()
-    bot.infinity_polling(timeout=60, long_polling_timeout=30)
+    time.sleep(1)
+    bot.set_webhook(url=f"{RENDER_URL}/telegram_webhook")
+else:
+    # Nếu chạy trên VS Code máy tính -> Tự động quay về Polling như cũ
+    import threading
+    print("🚀 Khởi động Polling cục bộ...")
+    bot.remove_webhook()
+    threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-# --- KHỞI ĐỘNG BOT --- 
-# (Đã được đưa ra ngoài để Render chạy ngay khi load code)
-bot_thread = threading.Thread(target=run_polling, daemon=True, name="VertaThread")
-bot_thread.start()
-print("🚀 Verta Bot Online!")
-
-# --- KHỞI ĐỘNG WEB MÔI TRƯỜNG LOCAL ---
 if __name__ == '__main__':
-    print("🚀 Verta Web Online & Ready!")
     socketio.run(app, host='0.0.0.0', port=5000)
