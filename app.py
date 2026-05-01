@@ -1,3 +1,6 @@
+import eventlet
+eventlet.monkey_patch() # Phép thuật giúp Web và Bot chạy song song trên Render không bị kẹt
+
 import threading
 import time
 import telebot
@@ -90,9 +93,13 @@ def run_polling():
     bot.remove_webhook()
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
 
+# --- KHỞI ĐỘNG BOT --- 
+# (Đã được đưa ra ngoài để Render chạy ngay khi load code)
+bot_thread = threading.Thread(target=run_polling, daemon=True, name="VertaThread")
+bot_thread.start()
+print("🚀 Verta Bot Online!")
+
+# --- KHỞI ĐỘNG WEB MÔI TRƯỜNG LOCAL ---
 if __name__ == '__main__':
-    # Khởi chạy bot trong thread riêng
-    threading.Thread(target=run_polling, daemon=True, name="VertaThread").start()
-    print("🚀 Verta Web & Bot Online & Ready!")
-    # Khởi chạy Web Server
+    print("🚀 Verta Web Online & Ready!")
     socketio.run(app, host='0.0.0.0', port=5000)
