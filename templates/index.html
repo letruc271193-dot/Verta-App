@@ -6,26 +6,32 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- THƯ VIỆN KẾT NỐI THỜI GIAN THỰC -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
     :root { --primary: #ff8c00; --dark: #1a1a1a; }
+
     #app-container { height: 100dvh; width: 100vw; position: relative; overflow: hidden; background: #000; isolation: isolate; }
     .screen { display: none; height: 100%; width: 100%; position: absolute; top: 0; left: 0; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
     .active-screen { display: flex !important; flex-direction: column; z-index: 100; opacity: 1; pointer-events: auto !important; }
     #map-customer, #map-driver { flex: 1; width: 100%; height: 100%; z-index: 1; }
+
     .search-box { position: absolute; top: env(safe-area-inset-top, 20px); left: 16px; right: 16px; z-index: 10000 !important; pointer-events: auto !important; }
     input { font-size: 16px !important; -webkit-user-select: text !important; user-select: text !important; pointer-events: auto !important; color: black !important; background: white !important; touch-action: manipulation; }
+
     #booking-sheet { position: absolute; bottom: 0; left: 0; right: 0; background: black; z-index: 20000 !important; padding: 24px 24px calc(24px + env(safe-area-inset-bottom)) 24px; border-radius: 30px 30px 0 0; transform: translateY(101%); transition: 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); box-shadow: 0 -10px 40px rgba(0,0,0,0.3); pointer-events: auto !important; }
+
     .v-card { border: 2px solid #eee; background: #000; color: var(--primary); transition: 0.2s; cursor: pointer; border-radius: 20px; }
     .v-card.selected { border-color: var(--primary); box-shadow: 0 0 15px rgba(255,140,0,0.3); }
     .price-text { font-size: 1.25rem; font-weight: 900; color: #fff; }
     .btn-orange { background: var(--primary); color: #000; font-weight: 900; touch-action: manipulation; }
     .info-pill { background: #000; color: var(--primary); padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: bold; border: 1px solid var(--primary); transition: 0.3s; }
+
     .env-panel { position: absolute; top: 200px; right: 16px; z-index: 5000; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
     #search-btn { display: flex; width: 50px; height: 50px; background: #000; border: 2px solid var(--primary); border-radius: 15px; align-items: center; justify-content: center; }
     .animate-spin-slow { animation: spin 3s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-</style>
+    </style>
 </head>
 <body class="bg-gray-100">
     <div id="app-container">
@@ -36,7 +42,7 @@
                 <div class="absolute inset-4 border-4 border-white border-b-transparent rounded-full animate-spin-slow"></div>
             </div>
             <p class="text-2xl font-black italic tracking-widest text-[#ff8c00] animate-pulse uppercase text-center px-4">Đang tìm tài xế gần nhất...</p>
-            <p id="search-status" class="mt-4 text-[10px] font-mono opacity-60 uppercase">Đang gửi tín hiệu...</p>
+            <p id="search-status" class="mt-4 text-[10px] font-mono opacity-60 uppercase">Đang gửi tín hiệu tới vệ tinh...</p>
             <button onclick="cancelSearching()" class="mt-12 px-8 py-3 border-2 border-white/30 rounded-2xl font-black text-xs uppercase tracking-widest">Huỷ tìm xe</button>
         </div>
 
@@ -111,12 +117,14 @@
     </div>
 
     <script>
+        // KẾT NỐI SERVER
         const socket = io();
 
         let cMap, dMap, markers = {s:null, e:null}, rL, dRoute, coords = {s:null, e:null};
         let currentOrder = null, currentDriver = null, rideStatus = 'idle';
         let currentAttemptIndex = 0, sortedDrivers = [], fallbackTimer = null;
         let currentAcceptedDriverId = null;
+        let isMyJob = null;
 
         const driversData = [
             { id: "36674469A", name: "Lê Anh Hào", loc: [10.773429222441061, 106.67763558197728], base: "Cơ sở A" },
@@ -125,8 +133,10 @@
         ];
         let driverRouteLayer = null;
 
+        // XỬ LÝ NHẬN TÍN HIỆU TỪ SERVER (THAY THẾ CHỨC NĂNG COLAB)
         socket.on('driver_response', function(data) {
             if (data.action === 'accept') {
+                console.log("📡 Tín hiệu từ Python: Driver Accept", data.driver_code);
                 currentAcceptedDriverId = data.driver_code;
                 showSearchingOverlay(false);
                 if (fallbackTimer) clearTimeout(fallbackTimer);
@@ -136,6 +146,7 @@
                 if(currentDriver && currentDriver.id === data.driver_code) renderDriverUI(currentDriver);
             } 
             else if (data.action === 'decline') {
+                console.log("📡 Tín hiệu từ Python: Driver Decline", data.driver_code);
                 if (rideStatus === 'searching') {
                     currentAttemptIndex++;
                     requestNextDriver();
@@ -145,17 +156,22 @@
 
         async function drawDriverRoute(drLoc, pickupLoc, dropoffLoc) {
             if (driverRouteLayer && dMap) dMap.removeLayer(driverRouteLayer);
+
             const url = `https://router.project-osrm.org/route/v1/driving/${drLoc[1]},${drLoc[0]};${pickupLoc[1]},${pickupLoc[0]};${dropoffLoc[1]},${dropoffLoc[0]}?overview=full&geometries=geojson`;
+
             try {
                 const r = await fetch(url);
                 const d = await r.json();
+
                 if (d.routes && d.routes[0]) {
                     driverRouteLayer = L.geoJSON(d.routes[0].geometry, {
                         style: { color: '#3b82f6', weight: 5, dashArray: '10, 10', opacity: 0.8 }
                     }).addTo(dMap);
                     dMap.fitBounds(driverRouteLayer.getBounds(), {padding: [50, 50]});
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.error("Lỗi khi lấy lộ trình tài xế:", e);
+            }
         }
 
         function showSearchingOverlay(show) {
@@ -186,6 +202,7 @@
 
             currentAttemptIndex = 0;
             rideStatus = 'searching';
+
             const isCar = document.getElementById('opt-c').classList.contains('selected');
             currentOrder = {
                 type: isCar ? "VERTACAR 🚗" : "VERTABIKE 🛵",
@@ -211,6 +228,7 @@
             let target = sortedDrivers[currentAttemptIndex];
             document.getElementById('search-status').innerText = `Đang kết nối tới: ${target.name}...`;
 
+            // GỬI TÍN HIỆU TỚI SERVER (THAY THẾ CHỨC NĂNG COLAB)
             socket.emit('request_driver', {
                 driver_code: target.id,
                 ride_type: currentOrder.type,
@@ -221,6 +239,7 @@
             if (fallbackTimer) clearTimeout(fallbackTimer);
             fallbackTimer = setTimeout(() => {
                 if (rideStatus === 'searching') {
+                    console.log("🕒 Fallback: Tự động nhận sau 5s");
                     socket.emit('driver_response', {'action': 'accept', 'driver_code': target.id});
                 }
             }, 5000);
@@ -233,7 +252,7 @@
             const e = document.getElementById('end-input').value.trim();
             document.getElementById('search-btn').style.display = (s && e) ? 'flex' : 'none';
         }
-
+        
         function nav(id) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active-screen'));
             document.getElementById(id).classList.add('active-screen');
@@ -312,7 +331,8 @@
 
         function renderDriverUI(dr) {
             const panel = document.getElementById('driver-info-panel');
-            let isMyJob =(rideStatus === 'driving' && String(dr.id) === String(currentAcceptedDriverId));
+
+            isMyJob =(rideStatus === 'driving' && String(dr.id) === String(currentAcceptedDriverId));
             if (isMyJob && currentOrder) {
                 drawDriverRoute(dr.loc, currentOrder.startLoc, currentOrder.endLoc);
             } else {
@@ -329,7 +349,9 @@
                         <div class="flex-1 bg-green-600 p-4 rounded-2xl text-white font-black text-center animate-pulse">
                             🔥 ĐANG THỰC HIỆN CHUYẾN
                         </div>
-                        <button onclick="cancelRideByDriver()" class="bg-red-600 text-white px-4 rounded-2xl font-bold text-xs shadow-lg active:scale-95">HỦY</button>
+                        <button onclick="cancelRideByDriver()" class="bg-red-600 text-white px-4 rounded-2xl font-bold text-xs shadow-lg active:scale-95">
+                            HỦY
+                        </button>
                     </div>`;
             } else {
                 statusHTML = `
