@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+    :root { --primary: #ff8c00; --dark: #1a1a1a; }
+    #app-container { height: 100dvh; width: 100vw; position: relative; overflow: hidden; background: #000; isolation: isolate; }
+    .screen { display: none; height: 100%; width: 100%; position: absolute; top: 0; left: 0; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .active-screen { display: flex !important; flex-direction: column; z-index: 100; opacity: 1; pointer-events: auto !important; }
+    #map-customer, #map-driver { flex: 1; width: 100%; height: 100%; z-index: 1; }
+    .search-box { position: absolute; top: env(safe-area-inset-top, 20px); left: 16px; right: 16px; z-index: 10000 !important; pointer-events: auto !important; }
+    input { font-size: 16px !important; -webkit-user-select: text !important; user-select: text !important; pointer-events: auto !important; color: black !important; background: white !important; touch-action: manipulation; }
+    #booking-sheet { position: absolute; bottom: 0; left: 0; right: 0; background: black; z-index: 20000 !important; padding: 24px 24px calc(24px + env(safe-area-inset-bottom)) 24px; border-radius: 30px 30px 0 0; transform: translateY(101%); transition: 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); box-shadow: 0 -10px 40px rgba(0,0,0,0.3); pointer-events: auto !important; }
+    .v-card { border: 2px solid #eee; background: #000; color: var(--primary); transition: 0.2s; cursor: pointer; border-radius: 20px; }
+    .v-card.selected { border-color: var(--primary); box-shadow: 0 0 15px rgba(255,140,0,0.3); }
+    .price-text { font-size: 1.25rem; font-weight: 900; color: #fff; }
+    .btn-orange { background: var(--primary); color: #000; font-weight: 900; touch-action: manipulation; }
+    .info-pill { background: #000; color: var(--primary); padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: bold; border: 1px solid var(--primary); transition: 0.3s; }
+    .env-panel { position: absolute; top: 200px; right: 16px; z-index: 5000; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+    #search-btn { display: flex; width: 50px; height: 50px; background: #000; border: 2px solid var(--primary); border-radius: 15px; align-items: center; justify-content: center; }
+    .animate-spin-slow { animation: spin 3s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+</style>
+</head>
+<body class="bg-gray-100">
+    <div id="app-container">
+        <!-- Overlay tìm kiếm -->
+        <div id="searching-overlay" class="hidden fixed inset-0 bg-black/95 z-[100000] flex flex-col items-center justify-center text-white">
+            <div class="relative w-24 h-24 mb-6">
+                <div class="absolute inset-0 border-4 border-[#ff8c00] border-t-transparent rounded-full animate-spin"></div>
+                <div class="absolute inset-4 border-4 border-white border-b-transparent rounded-full animate-spin-slow"></div>
+            </div>
+            <p class="text-2xl font-black italic tracking-widest text-[#ff8c00] animate-pulse uppercase text-center px-4">Đang tìm tài xế gần nhất...</p>
+            <p id="search-status" class="mt-4 text-[10px] font-mono opacity-60 uppercase">Đang gửi tín hiệu...</p>
+            <button onclick="cancelSearching()" class="mt-12 px-8 py-3 border-2 border-white/30 rounded-2xl font-black text-xs uppercase tracking-widest">Huỷ tìm xe</button>
+        </div>
+
+        <!-- Màn hình đăng nhập -->
+        <div id="login-screen" class="screen active-screen items-center justify-center bg-[#1a1a1a] p-6 text-white text-center">
+            <div class="w-full max-w-xs space-y-8">
+                <h1 class="text-6xl font-black italic tracking-tighter text-[#ff8c00]">VERTA</h1>
+                <div class="space-y-4">
+                    <button onclick="showCustomer()" class="w-full btn-orange py-4 rounded-2xl text-lg shadow-lg">TÔI LÀ KHÁCH</button>
+                    <div class="bg-[#2d2d2d] p-5 rounded-3xl border border-[#3d3d3d] space-y-3">
+                        <input id="driver-code" type="text" placeholder="Mã tài xế..." class="w-full p-3 rounded-xl bg-[#1a1a1a] text-center text-white">
+                        <button onclick="verifyDriver()" class="w-full bg-white text-black font-bold py-3 rounded-xl">TÔI LÀ TÀI XẾ</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Màn hình khách hàng -->
+        <div id="customer-screen" class="screen">
+            <div class="search-box space-y-2">
+                <div class="flex gap-2 items-center">
+                    <button onclick="goBack()" class="bg-[#1a1a1a] text-[#ff8c00] h-[55px] px-6 rounded-2xl font-black text-2xl shadow-xl">←</button>
+                    <input id="start-input" type="text" placeholder="Điểm đón khách..." class="flex-1 h-[50px] px-4 rounded-2xl shadow-xl text-sm" onfocus="hideSheet()" oninput="checkInputs()">
+                    <button id="search-btn" onclick="performSearch()" style="display:none;">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ff8c00" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    </button>
+                </div>
+                <input id="end-input" type="text" placeholder="Bạn muốn đi đâu?" class="w-full h-[50px] px-4 rounded-2xl shadow-xl text-sm ml-14" style="width: calc(100% - 3.5rem);" onfocus="hideSheet()" oninput="checkInputs()">
+                <div class="px-4 mt-2 ml-14" style="width: calc(100% - 3.5rem);">
+                    <button onclick="getMyLocation()" class="w-full flex items-center justify-center gap-2 bg-black border-2 border-[#ff8c00] text-[#ff8c00] py-2.5 rounded-xl text-[10px] font-black uppercase">📍 Sử dụng vị trí hiện tại</button>
+                </div>
+            </div>
+            <div class="env-panel">
+                <div id="real-clock" class="bg-black text-[#ff8c00] px-3 py-1 rounded-lg border border-[#ff8c00]/50 font-mono text-xs font-bold">00:00:00</div>
+                <select id="env-condition" onchange="calculate()" class="bg-white text-black text-[10px] font-black p-2 rounded-xl border-2 border-black">
+                    <option value="1">☀️ KHÔ RÁO</option>
+                    <option value="1.2">🌧️ MƯA NHẸ</option>
+                    <option value="1.3">🌪️ ĐÊM KHUYA</option>
+                    <option value="1.5">🌧️ MƯA LỚN</option>
+                    <option value="2.0">🌪️ BÃO TÁP</option>
+                </select>
+            </div>
+            <div id="map-customer"></div>
+            <div id="booking-sheet">
+                <div class="w-12 h-1.5 bg-gray-200 mx-auto mb-4 rounded-full"></div>
+                <div class="flex justify-between items-center mb-4">
+                    <span id="res-dist" class="info-pill">Dự kiến: -- km</span>
+                    <span id="traffic-info" class="info-pill">Mật độ giao thông: --</span>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mb-6">
+                    <div id="opt-m" onclick="selectV('m')" class="v-card p-4 text-center selected">
+                        <span class="text-xl font-black">VERTABIKE🛵</span>
+                        <div id="p-motor" class="price-text mt-1">--</div>
+                        <div id="t-motor" class="text-[10px] text-gray-400 font-bold uppercase">-- phút</div>
+                    </div>
+                    <div id="opt-c" onclick="selectV('c')" class="v-card p-4 text-center">
+                        <span class="text-xl font-black">VERTACAR🚗</span>
+                        <div id="p-car" class="price-text mt-1">--</div>
+                        <div id="t-car" class="text-[10px] text-gray-400 font-bold uppercase">-- phút</div>
+                    </div>
+                </div>
+                <button onclick="confirmBooking()" class="w-full btn-orange py-4 rounded-2xl text-lg">ĐẶT XE NGAY</button>
+            </div>
+        </div>
+
+        <!-- Màn hình tài xế -->
+        <div id="driver-screen" class="screen">
+            <button onclick="goBack()" class="absolute top-6 left-6 z-[10000] bg-[#1a1a1a] text-[#ff8c00] px-6 py-3 rounded-2xl font-black text-xl shadow-2xl">← THOÁT</button>
+            <div id="driver-info-panel"></div>
+            <div id="map-driver"></div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        let cMap, dMap, markers = {s:null, e:null}, rL, dRoute, coords = {s:null, e:null};
+        let currentOrder = null, currentDriver = null, rideStatus = 'idle';
+        let currentAttemptIndex = 0, sortedDrivers = [], fallbackTimer = null;
+        let currentAcceptedDriverId = null;
+
+        const driversData = [
+            { id: "36674469A", name: "Lê Anh Hào", loc: [10.773429222441061, 106.67763558197728], base: "Cơ sở A" },
+            { id: "36674469B", name: "Lê Trung Trực", loc: [10.761285072843998, 106.66834726663443], base: "Cơ sở B" },
+            { id: "36674469N", name: "Nguyễn Duy Vũ", loc: [10.706254915152465, 106.64014642433932], base: "Cơ sở N" }
+        ];
+        let driverRouteLayer = null;
+
+        socket.on('driver_response', function(data) {
+            if (data.action === 'accept') {
+                currentAcceptedDriverId = data.driver_code;
+                showSearchingOverlay(false);
+                if (fallbackTimer) clearTimeout(fallbackTimer);
+                rideStatus = 'driving';
+                let dr = driversData.find(d => d.id === data.driver_code);
+                alert(`✅ ${dr ? dr.name : "Tài xế"} đã nhận chuyến!`);
+                if(currentDriver && currentDriver.id === data.driver_code) renderDriverUI(currentDriver);
+            } 
+            else if (data.action === 'decline') {
+                if (rideStatus === 'searching') {
+                    currentAttemptIndex++;
+                    requestNextDriver();
+                }
+            }
+        });
+
+        async function drawDriverRoute(drLoc, pickupLoc, dropoffLoc) {
+            if (driverRouteLayer && dMap) dMap.removeLayer(driverRouteLayer);
+            const url = `https://router.project-osrm.org/route/v1/driving/${drLoc[1]},${drLoc[0]};${pickupLoc[1]},${pickupLoc[0]};${dropoffLoc[1]},${dropoffLoc[0]}?overview=full&geometries=geojson`;
+            try {
+                const r = await fetch(url);
+                const d = await r.json();
+                if (d.routes && d.routes[0]) {
+                    driverRouteLayer = L.geoJSON(d.routes[0].geometry, {
+                        style: { color: '#3b82f6', weight: 5, dashArray: '10, 10', opacity: 0.8 }
+                    }).addTo(dMap);
+                    dMap.fitBounds(driverRouteLayer.getBounds(), {padding: [50, 50]});
+                }
+            } catch (e) {}
+        }
+
+        function showSearchingOverlay(show) {
+            const el = document.getElementById('searching-overlay');
+            show ? el.classList.remove('hidden') : el.classList.add('hidden');
+        }
+
+        function getTrafficStatus() {
+            const hour = new Date().getHours();
+            if (hour >= 1 && hour <= 4) return { label: "Đường vắng", multiplier: 0.8, color: "#a855f7" };
+            if (hour >= 23 || hour < 6) return { label: "Đường vắng", multiplier: 0.8, color: "#4ade80" };
+            if (hour >= 17 && hour <= 19) return { label: "Kẹt xe", multiplier: 1.8, color: "#f87171" };
+            if ((hour >= 7 && hour <= 9) || (hour >= 20 && hour <= 22)) return { label: "Đông đúc", multiplier: 1.4, color: "#fbbf24" };
+            return { label: "Bình thường", multiplier: 1.0, color: "#ff8c00" };
+        }
+
+        function cancelSearching() {
+            showSearchingOverlay(false);
+            if (fallbackTimer) clearTimeout(fallbackTimer);
+            rideStatus = 'idle';
+        }
+
+        async function confirmBooking() {
+            sortedDrivers = driversData.map(d => {
+                let d2 = Math.pow(d.loc[0]-coords.s[0], 2) + Math.pow(d.loc[1]-coords.s[1], 2);
+                return {...d, dist_sq: d2};
+            }).sort((a, b) => a.dist_sq - b.dist_sq);
+
+            currentAttemptIndex = 0;
+            rideStatus = 'searching';
+            const isCar = document.getElementById('opt-c').classList.contains('selected');
+            currentOrder = {
+                type: isCar ? "VERTACAR 🚗" : "VERTABIKE 🛵",
+                price: isCar ? document.getElementById('p-car').innerText : document.getElementById('p-motor').innerText,
+                startLoc: coords.s,
+                endLoc: coords.e,
+                geo: rL.toGeoJSON()
+            };
+
+            showSearchingOverlay(true);
+            requestNextDriver();
+        }
+
+        function requestNextDriver() {
+            if (rideStatus !== 'searching') return;
+            if (currentAttemptIndex >= sortedDrivers.length) {
+                showSearchingOverlay(false);
+                alert("Rất tiếc, hiện tại không có tài xế nào trống! 🥲");
+                rideStatus = 'idle';
+                return;
+            }
+
+            let target = sortedDrivers[currentAttemptIndex];
+            document.getElementById('search-status').innerText = `Đang kết nối tới: ${target.name}...`;
+
+            socket.emit('request_driver', {
+                driver_code: target.id,
+                ride_type: currentOrder.type,
+                pickup: document.getElementById('start-input').value,
+                price: currentOrder.price
+            });
+
+            if (fallbackTimer) clearTimeout(fallbackTimer);
+            fallbackTimer = setTimeout(() => {
+                if (rideStatus === 'searching') {
+                    socket.emit('driver_response', {'action': 'accept', 'driver_code': target.id});
+                }
+            }, 5000);
+        }
+
+        function hideSheet() { document.getElementById('booking-sheet').style.transform = 'translateY(101%)'; }
+        
+        function checkInputs() {
+            const s = document.getElementById('start-input').value.trim();
+            const e = document.getElementById('end-input').value.trim();
+            document.getElementById('search-btn').style.display = (s && e) ? 'flex' : 'none';
+        }
+
+        function nav(id) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active-screen'));
+            document.getElementById(id).classList.add('active-screen');
+            setTimeout(() => {
+                if(cMap) cMap.invalidateSize();
+                if(dMap) {
+                    dMap.invalidateSize();
+                    if(currentDriver) dMap.setView(currentDriver.loc, 15);
+                }
+            }, 300);
+        }
+
+        function showCustomer() {
+            nav('customer-screen');
+            if(!cMap) {
+                cMap = L.map('map-customer', {zoomControl: false, attributionControl: false}).setView([10.7626, 106.6601], 13);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(cMap);
+            }
+        }
+        
+        function goBack() { nav('login-screen'); hideSheet(); }
+
+        async function performSearch() {
+            const startVal = document.getElementById('start-input').value;
+            const endVal = document.getElementById('end-input').value;
+            const findLoc = async (v) => {
+                if(v.includes("GPS")) return coords.s;
+                const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${v}&limit=1`);
+                const d = await r.json(); return d[0] ? [d[0].lat, d[0].lon] : null;
+            };
+            const pS = await findLoc(startVal);
+            const pE = await findLoc(endVal);
+            if(!pS || !pE) return alert("Không tìm thấy địa điểm!");
+            coords.s = pS; coords.e = pE;
+            if(markers.s) cMap.removeLayer(markers.s); if(markers.e) cMap.removeLayer(markers.e);
+            markers.s = L.marker(pS).addTo(cMap); markers.e = L.marker(pE).addTo(cMap);
+            calculate();
+        }
+
+        async function calculate() {
+            if(!coords.s || !coords.e) return;
+            const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords.s[1]},${coords.s[0]};${coords.e[1]},${coords.e[0]}?overview=full&geometries=geojson`);
+            const d = await r.json();
+            if(rL) cMap.removeLayer(rL);
+            rL = L.geoJSON(d.routes[0].geometry, {style:{color:'#ff8c00', weight:6}}).addTo(cMap);
+            cMap.fitBounds(rL.getBounds(), {padding:[80,80]});
+
+            const dist = d.routes[0].distance/1000;
+            const traffic = getTrafficStatus();
+            const weatherMultiplier = parseFloat(document.getElementById('env-condition').value);
+            const finalMultiplier = traffic.multiplier * weatherMultiplier;
+            const tInfo = document.getElementById('traffic-info');
+            tInfo.innerText = `Mật độ giao thông: ${traffic.label}`;
+            tInfo.style.color = traffic.color; tInfo.style.borderColor = traffic.color;
+            document.getElementById('res-dist').innerText = `Dự kiến: ${dist.toFixed(1)} km`;
+            document.getElementById('p-motor').innerText = Math.round((dist*5000+12000) * finalMultiplier).toLocaleString()+'đ';
+            document.getElementById('p-car').innerText = Math.round((dist*12000+25000) * finalMultiplier).toLocaleString()+'đ';
+            const delay = finalMultiplier > 1 ? finalMultiplier : 1;
+            document.getElementById('t-motor').innerText = Math.round(((dist/30)*60 + 2) * delay) + ' phút';
+            document.getElementById('t-car').innerText = Math.round(((dist/25)*60 + 5) * delay) + ' phút';
+            document.getElementById('booking-sheet').style.transform = 'translateY(0)';
+        }
+
+        function verifyDriver() {
+            const code = document.getElementById('driver-code').value.toUpperCase();
+            const dr = driversData.find(d => d.id === code);
+            if(dr) {
+                currentDriver = dr; nav('driver-screen'); renderDriverUI(dr);
+                if(!dMap) {
+                    dMap = L.map('map-driver', {zoomControl: false, attributionControl: false}).setView(dr.loc, 15);
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(dMap);
+                    L.marker(dr.loc).addTo(dMap);
+                } else dMap.setView(dr.loc, 15);
+            } else alert("Mã tài xế không đúng!");
+        }
+
+        function renderDriverUI(dr) {
+            const panel = document.getElementById('driver-info-panel');
+            let isMyJob =(rideStatus === 'driving' && String(dr.id) === String(currentAcceptedDriverId));
+            if (isMyJob && currentOrder) {
+                drawDriverRoute(dr.loc, currentOrder.startLoc, currentOrder.endLoc);
+            } else {
+                if (driverRouteLayer && dMap) {
+                    dMap.removeLayer(driverRouteLayer);
+                    driverRouteLayer = null;
+                }
+            }
+
+            let statusHTML = "";
+            if (isMyJob) {
+                statusHTML = `
+                    <div class="flex gap-2">
+                        <div class="flex-1 bg-green-600 p-4 rounded-2xl text-white font-black text-center animate-pulse">
+                            🔥 ĐANG THỰC HIỆN CHUYẾN
+                        </div>
+                        <button onclick="cancelRideByDriver()" class="bg-red-600 text-white px-4 rounded-2xl font-bold text-xs shadow-lg active:scale-95">HỦY</button>
+                    </div>`;
+            } else {
+                statusHTML = `
+                    <div class="bg-black/50 p-4 rounded-2xl text-white italic text-[10px] text-center border border-white/10">
+                        ${rideStatus === 'driving' ? 'ĐANG CHỜ KHÁCH' : '⏳ Đang chờ khách...'}
+                    </div>`;
+            }
+
+            panel.innerHTML = `
+                <div class="absolute top-24 left-6 right-6 z-[10000] space-y-3">
+                    <div class="bg-black/90 border-2 border-[#ff8c00] p-4 rounded-2xl text-white shadow-2xl">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="text-[#ff8c00] font-black">${dr.name.toUpperCase()}</p>
+                                <p class="text-[10px] opacity-60">📍 ${dr.base}</p>
+                            </div>
+                            <div class="w-2 h-2 bg-[#ff8c00] rounded-full animate-ping"></div>
+                        </div>
+                    </div>
+                    ${statusHTML}
+                </div>`;
+        }
+
+        function cancelRideByDriver() {
+            if(confirm("Xác nhận hủy chuyến này?")) {
+                rideStatus = 'idle';
+                currentAcceptedDriverId = null;
+                alert("Đã hủy chuyến, sẵn sàng nhận chuyến mới!");
+                if(currentDriver) renderDriverUI(currentDriver);
+            }
+        }
+
+        function selectV(t) {
+            document.getElementById('opt-m').classList.remove('selected');
+            document.getElementById('opt-c').classList.remove('selected');
+            document.getElementById('opt-'+t).classList.add('selected');
+        }
+
+        function getMyLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(pos => {
+                    coords.s = [pos.coords.latitude, pos.coords.longitude];
+                    document.getElementById('start-input').value = "Vị trí GPS của tôi";
+                    cMap.setView(coords.s, 16);
+                    if(markers.s) cMap.removeLayer(markers.s);
+                    markers.s = L.marker(coords.s).addTo(cMap);
+                });
+            }
+        }
+
+        setInterval(() => {
+            const el = document.getElementById('real-clock');
+            if(el) el.innerText = new Date().toLocaleTimeString('vi-VN');
+        }, 1000);
+    </script>
+</body>
+</html>
