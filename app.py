@@ -79,13 +79,6 @@ def run_polling():
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
 
 if __name__ == '__main__':
-    # 1. Chạy Bot Telegram ngầm
     threading.Thread(target=run_polling, daemon=True).start()
-    print("🚀 Bot Telegram đã chạy!")
-    
-    # 2. Lấy Cổng (Port) mà Render cấp phát, nếu chạy trên máy tính thì tự động lấy 5000
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Web đang chạy ở Port {port}...")
-    
-    # 3. Chạy Web Server (allow_unsafe_werkzeug để ép nó chạy mượt trên Render)
     socketio.run(app, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)

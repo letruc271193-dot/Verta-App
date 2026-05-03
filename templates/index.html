@@ -6,27 +6,22 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <!-- THƯ VIỆN KẾT NỐI THỜI GIAN THỰC -->
+    <!-- THƯ VIỆN KẾT NỐI SERVER THỜI GIAN THỰC -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
     :root { --primary: #ff8c00; --dark: #1a1a1a; }
-
     #app-container { height: 100dvh; width: 100vw; position: relative; overflow: hidden; background: #000; isolation: isolate; }
     .screen { display: none; height: 100%; width: 100%; position: absolute; top: 0; left: 0; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
     .active-screen { display: flex !important; flex-direction: column; z-index: 100; opacity: 1; pointer-events: auto !important; }
     #map-customer, #map-driver { flex: 1; width: 100%; height: 100%; z-index: 1; }
-
     .search-box { position: absolute; top: env(safe-area-inset-top, 20px); left: 16px; right: 16px; z-index: 10000 !important; pointer-events: auto !important; }
     input { font-size: 16px !important; -webkit-user-select: text !important; user-select: text !important; pointer-events: auto !important; color: black !important; background: white !important; touch-action: manipulation; }
-
     #booking-sheet { position: absolute; bottom: 0; left: 0; right: 0; background: black; z-index: 20000 !important; padding: 24px 24px calc(24px + env(safe-area-inset-bottom)) 24px; border-radius: 30px 30px 0 0; transform: translateY(101%); transition: 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); box-shadow: 0 -10px 40px rgba(0,0,0,0.3); pointer-events: auto !important; }
-
     .v-card { border: 2px solid #eee; background: #000; color: var(--primary); transition: 0.2s; cursor: pointer; border-radius: 20px; }
     .v-card.selected { border-color: var(--primary); box-shadow: 0 0 15px rgba(255,140,0,0.3); }
     .price-text { font-size: 1.25rem; font-weight: 900; color: #fff; }
     .btn-orange { background: var(--primary); color: #000; font-weight: 900; touch-action: manipulation; }
     .info-pill { background: #000; color: var(--primary); padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: bold; border: 1px solid var(--primary); transition: 0.3s; }
-
     .env-panel { position: absolute; top: 200px; right: 16px; z-index: 5000; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
     #search-btn { display: flex; width: 50px; height: 50px; background: #000; border: 2px solid var(--primary); border-radius: 15px; align-items: center; justify-content: center; }
     .animate-spin-slow { animation: spin 3s linear infinite; }
@@ -117,7 +112,7 @@
     </div>
 
     <script>
-        // KẾT NỐI SERVER
+        // --- KẾT NỐI SERVER ---
         const socket = io();
 
         let cMap, dMap, markers = {s:null, e:null}, rL, dRoute, coords = {s:null, e:null};
@@ -133,7 +128,7 @@
         ];
         let driverRouteLayer = null;
 
-        // XỬ LÝ NHẬN TÍN HIỆU TỪ SERVER (THAY THẾ CHỨC NĂNG COLAB)
+        // --- NHẬN TÍN HIỆU TỪ BACKEND (THAY THẾ CHỨC NĂNG CỦA COLAB) ---
         socket.on('driver_response', function(data) {
             if (data.action === 'accept') {
                 console.log("📡 Tín hiệu từ Python: Driver Accept", data.driver_code);
@@ -156,13 +151,10 @@
 
         async function drawDriverRoute(drLoc, pickupLoc, dropoffLoc) {
             if (driverRouteLayer && dMap) dMap.removeLayer(driverRouteLayer);
-
             const url = `https://router.project-osrm.org/route/v1/driving/${drLoc[1]},${drLoc[0]};${pickupLoc[1]},${pickupLoc[0]};${dropoffLoc[1]},${dropoffLoc[0]}?overview=full&geometries=geojson`;
-
             try {
                 const r = await fetch(url);
                 const d = await r.json();
-
                 if (d.routes && d.routes[0]) {
                     driverRouteLayer = L.geoJSON(d.routes[0].geometry, {
                         style: { color: '#3b82f6', weight: 5, dashArray: '10, 10', opacity: 0.8 }
@@ -228,7 +220,7 @@
             let target = sortedDrivers[currentAttemptIndex];
             document.getElementById('search-status').innerText = `Đang kết nối tới: ${target.name}...`;
 
-            // GỬI TÍN HIỆU TỚI SERVER (THAY THẾ CHỨC NĂNG COLAB)
+            // BẮN TÍN HIỆU ĐẶT XE VỀ SERVER
             socket.emit('request_driver', {
                 driver_code: target.id,
                 ride_type: currentOrder.type,
@@ -303,13 +295,19 @@
             const dist = d.routes[0].distance/1000;
             const traffic = getTrafficStatus();
             const weatherMultiplier = parseFloat(document.getElementById('env-condition').value);
-            const finalMultiplier = traffic.multiplier * weatherMultiplier;
+
+            // ---> SỬ DỤNG FUZZY LOGIC TÍNH GIÁ ĐỘNG Ở ĐÂY <---
+            const finalMultiplier = fuzzyPriceMultiplier(dist, traffic.multiplier, weatherMultiplier);
+
             const tInfo = document.getElementById('traffic-info');
             tInfo.innerText = `Mật độ giao thông: ${traffic.label}`;
             tInfo.style.color = traffic.color; tInfo.style.borderColor = traffic.color;
             document.getElementById('res-dist').innerText = `Dự kiến: ${dist.toFixed(1)} km`;
+
+            // Tính giá dựa trên hệ số của Fuzzy Logic
             document.getElementById('p-motor').innerText = Math.round((dist*5000+12000) * finalMultiplier).toLocaleString()+'đ';
             document.getElementById('p-car').innerText = Math.round((dist*12000+25000) * finalMultiplier).toLocaleString()+'đ';
+
             const delay = finalMultiplier > 1 ? finalMultiplier : 1;
             document.getElementById('t-motor').innerText = Math.round(((dist/30)*60 + 2) * delay) + ' phút';
             document.getElementById('t-car').innerText = Math.round(((dist/25)*60 + 5) * delay) + ' phút';
@@ -406,6 +404,55 @@
             const el = document.getElementById('real-clock');
             if(el) el.innerText = new Date().toLocaleTimeString('vi-VN');
         }, 1000);
+
+        // --- BỘ MÁY FUZZY LOGIC TÍNH GIÁ ĐỘNG (GIỮ NGUYÊN) ---
+        function trimf(x, [a, b, c]) {
+            if (x <= a || x >= c) return 0;
+            if (a < x && x <= b) return (x - a) / (b - a);
+            if (b < x && x < c) return (c - x) / (c - b);
+            return 0;
+        }
+
+        function trapmf(x, [a, b, c, d]) {
+            if (x <= a || x >= d) return 0;
+            if (a < x && x <= b) return (x - a) / (b - a);
+            if (b < x && x <= c) return 1;
+            if (c < x && x < d) return (d - x) / (d - c);
+            return 0;
+        }
+
+        function fuzzyPriceMultiplier(dist, trafficVal, weatherVal) {
+            let dist_short = trapmf(dist, [0, 0, 3, 6]);
+            let dist_med = trimf(dist, [3, 7, 12]);
+            let dist_long = trapmf(dist, [8, 15, 100, 100]);
+
+            let traf_light = trapmf(trafficVal, [0, 0, 0.9, 1.1]);
+            let traf_normal = trimf(trafficVal, [0.9, 1.2, 1.5]);
+            let traf_heavy = trapmf(trafficVal, [1.3, 1.8, 5, 5]);
+
+            let wea_clear = trapmf(weatherVal, [0, 0, 1.0, 1.2]);
+            let wea_rain = trimf(weatherVal, [1.1, 1.3, 1.6]);
+            let wea_storm = trapmf(weatherVal, [1.4, 2.0, 5, 5]);
+
+            let out_base = 0;   
+            let out_high = 0;   
+            let out_surge = 0;  
+
+            out_base = Math.max(out_base, Math.min(traf_light, wea_clear));
+            out_base = Math.max(out_base, Math.min(traf_normal, wea_clear));
+            out_high = Math.max(out_high, traf_heavy, wea_rain);
+            out_surge = Math.max(out_surge, Math.min(traf_heavy, wea_storm));
+            out_surge = Math.max(out_surge, Math.min(dist_long, traf_heavy));
+
+            let weight_base = 1.0;
+            let weight_high = 1.5;
+            let weight_surge = 2.5;
+
+            let numerator = (out_base * weight_base) + (out_high * weight_high) + (out_surge * weight_surge);
+            let denominator = out_base + out_high + out_surge;
+
+            return denominator === 0 ? 1.0 : (numerator / denominator);
+        }
     </script>
 </body>
 </html>
